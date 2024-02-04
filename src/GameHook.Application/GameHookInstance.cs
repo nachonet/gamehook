@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging;
 using System.Diagnostics;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using System.Runtime.InteropServices;
 
 namespace GameHook.Application
 {
@@ -29,6 +30,7 @@ namespace GameHook.Application
         public Engine? GlobalScriptEngine2 { get; set; }
         public Engine? GlobalScriptEngine3 { get; set; }
 
+        private const uint MACOS_MAX_MEMORY_ADDRESS_BLOCK_SIZE = 2048;
 #if DEBUG
         private bool DebugOutputMemoryLayoutToFilesystem { get; set; } = false;
 #endif
@@ -309,6 +311,12 @@ namespace GameHook.Application
                     BlocksToRead = PlatformOptions.Ranges.ToList();
                 }
 
+                if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+                {
+                    // We limit the length of the blocks in masOS due to the fact that the it has a lower dgram packet size
+                    BlocksToRead = SplitMemoryAddressBlocks(BlocksToRead.ToList(), MACOS_MAX_MEMORY_ADDRESS_BLOCK_SIZE);
+                }
+
                 await Read();
 
                 Initalized = true;
@@ -329,6 +337,36 @@ namespace GameHook.Application
 
                 throw;
             }
+        }
+
+        private List<MemoryAddressBlock> SplitMemoryAddressBlocks(List<MemoryAddressBlock> blocks, uint blockMaxSize)
+        {
+            var splittedBlocks = new List<MemoryAddressBlock>();
+
+            for (int i = 0; i < blocks.Count(); i++)
+            {
+                MemoryAddressBlock memBlock = blocks[i];
+                int rangeLength = Convert.ToInt32(memBlock.EndingAddress) - Convert.ToInt32(memBlock.StartingAddress);
+                if (rangeLength > 0)
+                {
+                    if (rangeLength > blockMaxSize)
+                    {
+                        uint numberOfBlocks = (uint)Math.Ceiling(rangeLength / Convert.ToDouble(blockMaxSize));
+                        for (uint j = 0; j < numberOfBlocks; j++)
+                        {
+                            MemoryAddress startingAddress = memBlock.StartingAddress + blockMaxSize * j + j;
+                            MemoryAddress endingAddress = Math.Min(startingAddress + blockMaxSize, memBlock.EndingAddress);
+                            var block = new MemoryAddressBlock($"{memBlock.Name} {j}", startingAddress, endingAddress);
+                            splittedBlocks.Add(block);
+                        }
+                    }
+                    else
+                    {
+                        splittedBlocks.Add(memBlock);
+                    }
+                }
+            }
+            return splittedBlocks;
         }
 
         public object? EvalulateExpression_Type1(string function, object? value)
